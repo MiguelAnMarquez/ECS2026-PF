@@ -1,0 +1,4 @@
+.streamlit/
+history/
+__pycache__/
+*.pyc
