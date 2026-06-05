@@ -3,3 +3,4 @@ sentence-transformers
 scikit-learn
 numpy
 groq
+torchvision
