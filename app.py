@@ -412,10 +412,10 @@ with st.sidebar:
             st.rerun()
             
         if current_query:
-            if st.button("Clear Filters", use_container_width=True, key="combobox_clear_action"):
+            if st.button("Clear Filters", use_container_width=True):
                 st.session_state.search_query_filter = ""
                 if "combobox_text_input_field" in st.session_state:
-                    st.session_state["combobox_text_input_field"] = ""
+                    del st.session_state["combobox_text_input_field"]
                 st.rerun()
 
     st.markdown('<div class="recent-title">Recent</div>', unsafe_allow_html=True)
