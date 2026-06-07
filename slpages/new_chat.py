@@ -1,92 +1,80 @@
 import streamlit as st 
-import json 
 import os 
 import re 
 import base64 
 import random 
 import numpy as np 
 from datetime import datetime 
-from sentence_transformers import SentenceTransformer 
-from sklearn .metrics .pairwise import cosine_similarity 
 from groq import Groq 
+import warnings
+from simpleeval import simple_eval
 
+from utils.chat_storage import cargar_chat
+from utils.chat_storage import guardar_chat
+from utils.user_storage import _guardar_sesiones
+from utils.user_storage import _cargar_sesiones
+from slpages.login import actualizar_usuario
+
+warnings.filterwarnings("ignore", module="transformers")
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 if "GROQ_API_KEY" in st.secrets:
     os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
 
-client =Groq ()
-RUTA_CONOCIMIENTO ="assets/knowledge.txt"
+client = Groq()
+RUTA_CONOCIMIENTO = "assets/knowledge.txt"
 
-@st .cache_resource 
-def cargar_modelo_semantico ():
-    modelo =SentenceTransformer ('paraphrase-multilingual-MiniLM-L12-v2')
-    if os .path .exists (RUTA_CONOCIMIENTO ):
-        with open (RUTA_CONOCIMIENTO ,"r",encoding ="utf-8")as f :
-            texto =f .read ()
-        fragmentos =[f .strip ()for f in texto .split ("\n\n")if len (f .strip ())>20 ]
-        if fragmentos :
-            embeddings =modelo .encode (fragmentos ,show_progress_bar =False )
-            return modelo ,fragmentos ,embeddings 
-    return modelo ,[],[]
+@st.cache_resource 
+def cargar_modelo_semantico():
 
-modelo_encoder ,fragmentos ,embeddings_conocimiento =cargar_modelo_semantico ()
+    from sentence_transformers import (SentenceTransformer)
+    modelo = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
+    if os.path.exists(RUTA_CONOCIMIENTO):
+        with open(RUTA_CONOCIMIENTO, "r", encoding="utf-8") as f:
+            texto = f.read()
+        fragmentos = [f.strip() for f in texto.split("\n\n") if len(f.strip()) > 20]
+        if fragmentos:
+            embeddings = modelo.encode(fragmentos, show_progress_bar=False)
+            return modelo, fragmentos, embeddings 
+    return modelo, [], []
 
-
-
-def cargar_chat (chat_id ):
-    path =f"history/{chat_id}.json"
-    if os .path .exists (path ):
-        with open (path ,"r",encoding ="utf-8")as f :
-            return json .load (f ).get ("mensajes",[])
-    return []
-
-def guardar_chat (chat_id ,mensajes ):
-    if chat_id is None :
-        chat_id ="chat_"+datetime .now ().strftime ("%Y%m%d_%H%M%S")
-        st .session_state .chat_seleccionado_id =chat_id 
-
-    titulo =mensajes [0 ]["content"]
-    if len (titulo )>40 :
-        titulo =titulo [:40 ]+"..."
-
-    data ={
-    "titulo":titulo ,
-    "fecha":datetime .now ().strftime ("%Y-%m-%d %H:%M:%S"),
-    "mensajes":mensajes 
-    }
-
-    if not os .path .exists ("history"):
-        os .makedirs ("history")
-
-    with open (f"history/{chat_id}.json","w",encoding ="utf-8")as f :
-        json .dump (data ,f ,ensure_ascii =False ,indent =4 )
-
-def get_image_base64 (path ):
-    if os .path .exists (path ):
-        with open (path ,"rb")as image_file :
-            return base64 .b64encode (image_file .read ()).decode ()
+def get_image_base64(path):
+    if os.path.exists(path):
+        with open(path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode()
     return ""
 
-def es_operacion (texto ):
-    return re .match (r'^[0-9+\-*/(). ]+$',texto .strip ())
+def es_operacion(texto):
+    return bool(
+        re.match(
+            r'^[0-9+\-*/(). ]+$',
+            texto.strip()
+        )
+    )
 
-def resolver (texto ):
-    try :
-        return str (eval (texto ))
-    except :
+def resolver(texto):
+    try:
+        texto = texto.replace("^", "**")
+        return str(
+            simple_eval(
+                texto,
+                functions={},
+                names={}
+            )
+        )
+    except Exception:
         return "Math error"
 
+def extraer_y_renderizar_banner(texto_completo, similitud_pct=None):
+    patron = r'^■\s*\[Área:\s*([^\]]+)\]\s*\n*'
+    match = re.match(patron, texto_completo.strip())
 
-
-
-def extraer_y_renderizar_banner (texto_completo ,similitud_pct =None ):
-    patron =r'^■\s*\[Área:\s*([^\]]+)\]\s*\n*'
-    match =re .match (patron ,texto_completo .strip ())
-
-    badge_similitud =""
-    if similitud_pct is not None :
-        badge_similitud =f"""
+    badge_similitud = ""
+    if similitud_pct is not None:
+        badge_similitud = f"""
         <span class="badge-similarity tooltip-container">
             Match: {similitud_pct}%
             <span class="tooltip-text">
@@ -98,131 +86,296 @@ def extraer_y_renderizar_banner (texto_completo ,similitud_pct =None ):
         </span>
         """
 
-    if match :
-        area_nombre =match .group (1 ).strip ()
-        texto_limpio =re .sub (patron ,'',texto_completo .strip (),count =1 )
+    if match:
+        area_nombre = match.group(1).strip()
+        texto_limpio = re.sub(patron, '', texto_completo.strip(), count=1)
 
-        es_pilar =any (p in area_nombre .lower ()for p in ["videojuegos","video games","música","music","matemáticas","mathematics","filosofía","philosophy","arte","art"])
-        clase_color ="badge-pilar"if es_pilar else "badge-general"
+        es_pilar = any(p in area_nombre.lower() for p in ["videojuegos", "video games", "música", "music", "matemáticas", "mathematics", "filosofía", "philosophy", "arte", "art"])
+        clase_color = "badge-pilar" if es_pilar else "badge-general"
 
-        html_banner =f"""
+        html_banner = f"""
         <div class="chat-bubble-top-container">
             <span class="badge-label {clase_color}">■ {area_nombre}</span>
             {badge_similitud}
         </div>
         """
-        return texto_limpio ,html_banner 
+        return texto_limpio, html_banner 
 
-    return texto_completo ,f'<div class="chat-bubble-top-container-empty">{badge_similitud}</div>'if badge_similitud else ""
+    return texto_completo, f'<div class="chat-bubble-top-container-empty">{badge_similitud}</div>' if badge_similitud else ""
 
+def consultar_llm(prompt):
 
+    if es_operacion(prompt):
+        st.session_state["ultima_similitud"] = 0
+        return resolver(prompt)
 
+    system_prompt = (
+        construir_system_prompt()
+    )
 
-def consultar_llm (prompt ):
-    if es_operacion (prompt ):
-        st .session_state ["ultima_similitud"]=0 
-        return resolver (prompt )
+    contexto_recuperado = (
+        recuperar_contexto_semantico(prompt)
+    )
 
-    ahora =datetime .now ()
-    fecha_actual =ahora .strftime ("%A, %d de %B de %Y")
-    hora_actual =ahora .strftime ("%I:%M:%S %p")
+    mensajes = (
+        construir_mensajes_groq(
+            prompt,
+            contexto_recuperado,
+            system_prompt
+        )
+    )
+    return consultar_groq(mensajes)
 
-    nombre_usuario =st .session_state .get ("user_name","Usuario Desconocido")
-    rol_usuario =st .session_state .get ("user_tag","Free User")
+def construir_system_prompt():
 
-    SYSTEM_PROMPT_DINAMICO =f"""
-    Eres Genesis, un chatbot asistente, avanzado e inteligente creado por Migues456.
-    Tu ubicación actual configurada en el servidor es Corozal, Sucre, Colombia.
-    
-    INFORMACIÓN DE LA IDENTIDAD DEL USUARIO CON EL QUE HABLAS:
-    - Nombre del Usuario: {nombre_usuario}
-    - Rol/Suscripción del Usuario: {rol_usuario}
-    
-    INFORMACIÓN DE TIEMPO REAL:
-    - Fecha de hoy: {fecha_actual}
-    - Hora exacta del sistema: {hora_actual}
+    ahora = datetime.now()
+    fecha_actual = ahora.strftime("%A, %d de %B de %Y")
+    hora_actual = ahora.strftime("%I:%M:%S %p")
 
-    MANUAL DE NAVEGACIÓN Y SOPORTE DE LA INTERFAZ (Tu deber absoluto es guiar al usuario a usar la app si te pregunta algo sobre ella):
-    - Cambiar Nombre de Perfil / Nombre de usuario / Avatar: Explica detalladamente que debe mirar la barra lateral izquierda, ir hacia abajo del todo y hacer clic en el ícono de engranaje (Settings). Esto abrirá un panel central ("Edit Profile Identity Settings") donde podrá escribir su nuevo nombre de pantalla y cargar un archivo de imagen para su avatar.
-    - Comenzar un Nuevo Chat: Explica que la app limpia los componentes visuales regresando a la pantalla inicial ("Blank Slate") para abrir hilos de conversación independientes sin mezclar contextos.
-    - Historial de Conversaciones: Explica que cada sesión se almacena de forma local dentro del directorio 'history/' en formato JSON con un título inteligente basado en el primer mensaje, y puede darles clic desde la barra lateral izquierda para reanudarlos.
-    - Rol/Rango del usuario: Muestra el tipo de cuenta asignada al usuario (actualmente configurada como: {rol_usuario}).
+    nombre_usuario = st.session_state.get(
+        "display_name",
+        "Usuario Desconocido"
+    )
 
-    REGLAS DE IDENTIDAD Y MULTILINGÜISMO ABSOLUTAS:
-    - RECONOCIMIENTO DE IDIOMA EN ESPEJO: Debes identificar de forma inmediata el idioma exacto en el que el usuario te está hablando (español, inglés, francés, etc.) y generar TODA tu respuesta en ese mismo idioma. Es mandatorio.
-    - El nombre de tu interlocutor es {nombre_usuario}. ¡TÚ NO TE LLAMAS ASÍ! Tú eres Genesis.
-    - Si el usuario te pregunta por su nombre, rol, o quién es él, respóndele utilizando los datos provistos en la sección 'INFORMACIÓN DE LA IDENTIDAD DEL USUARIO'.
-    - Tus áreas de especialización académica son ÚNICAMENTE CINCO (5): Videojuegos, Música, Matemáticas, Filosofía y Arte. Sin embargo, TIENES PLENO PERMISO Y ES OBLIGATORIO que asistas al usuario en la navegación y control de la interfaz web utilizando el 'MANUAL DE NAVEGACIÓN Y SOPORTE DE LA INTERFAZ'.
-    - Si te preguntan por materias externas (ej: medicina, leyes, cocina), aclara de forma breve que recurres al conocimiento general pero responde amablemente.
+    rol_usuario = st.session_state.get(
+        "role",
+        "Free User"
+    )
+    return f"""
+    Este es el System Prompt, una parte del prompt que te dice como comportarte, y es independiente del prompt del usuario.
 
-    REGLAS OBLIGATORIAS DE ENFOCAMIENTO (BANNER):
-    Al inicio de cada respuesta, debes colocar un identificador de área exacto adaptado obligatoriamente al idioma de la respuesta (ej. si respondes en inglés usa "System and Identity", si es en español usa "Sistema e Identidad"):
-    1. Si te preguntan por ti, tu creador, tus modelos, tu memoria, navegación por la plataforma, cómo cambiar el nombre de usuario/perfil, configuraciones o tiempo real, usa exactamente al inicio de la respuesta: ■ [Área: Sistema e Identidad]
-    2. Si coincide con tus pilares de estudio, usa el respectivo banner: ■ [Área: Videojuegos], ■ [Área: Música], ■ [Área: Matemáticas], ■ [Área: Filosofía], o ■ [Área: Arte].
-    3. Si es un tema completamente externo, usa exactamente al inicio de la respuesta: ■ [Área: Conocimiento General]
+    Eres Genesis, un chatbot de IA avanzado e inteligente creado por Migues456.
+
+    ### REGLA CRÍTICA DE FORMATO (OBLIGATORIA)
+    La PRIMERA línea de TODAS tus respuestas DEBE ser uno de los siguientes banners:
+    1. Si hablas de ti, tu creación, navegación, configuraciones o tiempo real: ■ [Área: Sistema e Identidad]
+    2. Si hablas de Videojuegos, Música, Matemáticas, Filosofía o Arte utiliza respectivamente:
+    ■ [Área: Sistema e Identidad]
+    ■ [Área: Videojuegos]
+    ■ [Área: Música]
+    ■ [Área: Matemáticas]
+    ■ [Área: Filosofía]
+    ■ [Área: Arte]
+    ■ [Área: Conocimiento General]
+    3. Si es cualquier otro tema: ■ [Área: Conocimiento General]
+
+    ### REGLAS DE IDENTIDAD Y COMPORTAMIENTO
+    - RECONOCIMIENTO DE IDIOMA EN ESPEJO:
+        La respuesta completa debe escribirse en el mismo idioma utilizado por el usuario.
+        Ejemplos:
+        Usuario: "Hello"
+        La respuesta dada debe estar en ingles.
+
+        Usuario: "Bonjour"
+        La respuesta dada debe estar en frances.
+
+        Usuario: "Hola"
+        La respuesta dada debe estar en español.
+
+        Esta regla tiene prioridad sobre el idioma utilizado en este System Prompt.
+
+    - Tú eres Genesis. No eres el usuario.
+    - Si preguntan por tu origen, fuiste creado por Migues456.
+    - Si preguntan por identidad o rol, usa los datos del usuario proporcionados.
+
+    ### INFORMACIÓN DE SESIÓN (CONTEXTO)
+    - Ubicación: Corozal, Sucre, Colombia.
+    - Usuario: {nombre_usuario}
+    - Rol/Suscripción: {rol_usuario}
+    - Fecha/Hora: {fecha_actual} | {hora_actual}
+
+    ### ÁREAS DE ESPECIALIDAD Y AYUDA
+    - Especialista en: Videojuegos, Música, Matemáticas, Filosofía y Arte.
+    - Manual de Navegación:
+    - Settings (engranaje inferior): Cambiar nombre, Avatar, Ajustes personalizados, Logout.
+    - Barra lateral: Historial de chats y Nuevo chat.
+
+    ### INSTRUCCIONES PERSONALIZADAS DEL USUARIO
+    {st.session_state.get("custom_prompt", "")}
+
+    Aqui acaba el System Prompt, a partir de aqui empieza el prompt del usuario.
     """
 
-    contexto_recuperado =""
-    similitud_final =0.0 
-    if len (fragmentos )>0 :
-        emb_pregunta =modelo_encoder .encode ([prompt ])
-        similitudes =cosine_similarity (emb_pregunta ,embeddings_conocimiento )[0 ]
-        indice_mejor =np .argmax (similitudes )
-        similitul_max =similitudes [indice_mejor ]
-        similitud_final =float (similitul_max )if similitul_max >0 else 0.0 
+def recuperar_contexto_semantico(prompt):
 
-        if similitud_final >=0.35 :
-            contexto_recuperado =fragmentos [indice_mejor ]
+    modelo_encoder, fragmentos, embeddings_conocimiento = (
+        cargar_modelo_semantico()
+    )
 
-    st .session_state ["ultima_similitud"]=int (similitud_final *100 )
+    contexto_recuperado = ""
+    similitud_final = 0.0
 
-    if contexto_recuperado :
-        user_content =f"[Contexto de respaldo detectado en base local: {contexto_recuperado}]\nPregunta del usuario: {prompt}"
-    else :
-        user_content =prompt 
+    from sklearn.metrics.pairwise import cosine_similarity
 
-    mensajes_para_groq =[{"role":"system","content":SYSTEM_PROMPT_DINAMICO }]
-    historial_activo =st .session_state .mensajes_chat_actual 
-    memoria_reducida =historial_activo [-14 :]if len (historial_activo )>14 else historial_activo 
+    if len(fragmentos) > 0:
 
-    for msg in memoria_reducida :
-        mensajes_para_groq .append ({
-        "role":msg ["role"],
-        "content":msg ["content"]
+        emb_pregunta = modelo_encoder.encode([prompt])
+
+        similitudes = cosine_similarity(
+            emb_pregunta,
+            embeddings_conocimiento
+        )[0]
+
+        indice_mejor = np.argmax(similitudes)
+
+        similitud_max = similitudes[indice_mejor]
+
+        similitud_final = (
+            float(similitud_max)
+            if similitud_max > 0
+            else 0.0
+        )
+
+        if similitud_final >= 0.35:
+            contexto_recuperado = (
+                fragmentos[indice_mejor]
+            )
+
+    st.session_state["ultima_similitud"] = (
+        int(similitud_final * 100)
+    )
+
+    return contexto_recuperado
+
+def construir_mensajes_groq(prompt,contexto_recuperado,system_prompt):
+
+    if contexto_recuperado:
+
+        user_content = (
+            f"[Contexto de respaldo detectado "
+            f"en base local: {contexto_recuperado}]"
+            f"\nPregunta del usuario: {prompt}"
+        )
+
+    else:
+        user_content = prompt
+
+    mensajes_para_groq = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+
+    historial_activo = (
+        st.session_state.mensajes_chat_actual
+    )
+
+    memoria_reducida = (
+        historial_activo[-14:]
+        if len(historial_activo) > 14
+        else historial_activo
+    )
+
+    for msg in memoria_reducida:
+
+        mensajes_para_groq.append({
+            "role": msg["role"],
+            "content": msg["content"]
         })
 
-    if len (mensajes_para_groq )>1 and mensajes_para_groq [-1 ]["role"]=="user":
-        mensajes_para_groq [-1 ]={"role":"user","content":user_content }
-    else :
-        mensajes_para_groq .append ({"role":"user","content":user_content })
+    if (
+        len(mensajes_para_groq) > 1
+        and mensajes_para_groq[-1]["role"] == "user"
+    ):
 
-    try :
-        completion =client .chat .completions .create (
-        model ="llama-3.1-8b-instant",
-        messages =mensajes_para_groq ,
-        temperature =0.3 
+        mensajes_para_groq[-1] = {
+            "role": "user",
+            "content": user_content
+        }
+
+    else:
+
+        mensajes_para_groq.append({
+            "role": "user",
+            "content": user_content
+        })
+
+    return mensajes_para_groq
+
+def consultar_groq(mensajes):
+
+    try:
+
+        completion = (
+            client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=mensajes,
+                temperature=0.3
+            )
         )
-        return completion .choices [0 ].message .content 
-    except Exception as e :
-        return f"■ [Área: Sistema e Identidad]\nError de comunicación con Groq: {e}"
 
+        return (
+            completion
+            .choices[0]
+            .message
+            .content
+        )
 
+    except Exception as e:
 
+        return (
+            "■ [Área: Sistema e Identidad]\n"
+            f"Error de comunicación con Groq: {e}"
+        )
 
-def inject_css (is_blank_slate =False ):
-    scrollbar_lock ="""
+def inject_css(is_blank_slate=False):
+    scrollbar_lock = """
     [data-testid="stAppViewBlockContainer"] {
         overflow: hidden !important;
     }
-    """if is_blank_slate else ""
+    """ if is_blank_slate else ""
 
-    custom_avatar_url =st .session_state .get ("user_avatar_base64","")
-    avatar_bg_style =f"background-image: url('{custom_avatar_url}') !important; background-size: cover !important; background-position: center !important; color: transparent !important;"if custom_avatar_url else ""
+    custom_avatar_url = st.session_state.get("user_avatar_base64", "")
+    
+    if custom_avatar_url:
+        avatar_bg_style = f"background-image: url('{custom_avatar_url}') !important; background-size: cover !important; background-position: center !important; color: transparent !important;"
+    else:
+        inicial_usuario = st.session_state.get("display_name", "U")[0].upper()
+        avatar_bg_style = f"""
+        background-color: #FE5E00 !important; 
+        background-image: none !important; 
+        color: white !important; 
+        font-weight: bold !important; 
+        font-size: 0.95rem !important; 
+        display: flex !important; 
+        align-items: center !important; 
+        justify-content: center !important;
+        """
+        avatar_bg_style += f' content: "{inicial_usuario}" !important;'
 
-    st .markdown (f"""
+    st.markdown(f"""
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0" />
     
     <style>
+    /* Global base application wrapper styling */
+    .stApp {{
+        background: #0d0d11 !important;
+    }}
+    
+    /* Fixed Rainbow Glow from Version 1: Tracked directly to viewport so long chats don't warp it */
+    .stApp::before {{
+        content: ""; 
+        position: fixed !important; 
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: radial-gradient(circle at 50% 30%, rgba(255, 0, 128, 0.14) 0%, rgba(123, 0, 255, 0.09) 25%, rgba(0, 191, 255, 0.05) 55%, transparent 75%); 
+        filter: blur(80px); 
+        animation: pulseRainbowGlow 20s ease-in-out infinite; 
+        pointer-events: none; 
+        z-index: 0; 
+        will-change: filter, background, transform;
+    }}
+
+    @keyframes pulseRainbowGlow {{ 
+        0%, 100% {{ filter: blur(80px) hue-rotate(0deg); transform: scale(1) translate(0px, 0px); }} 
+        33% {{ filter: blur(95px) hue-rotate(120deg); transform: scale(1.05) translate(20px, -15px); }}
+        66% {{ filter: blur(80px) hue-rotate(240deg); transform: scale(0.95) translate(-20px, 20px); }}
+    }}
+
+    /* Clean Streamlit Layout Layers from Version 2 */
     [data-testid="stBlockContainer"] {{
         position: relative !important; 
         z-index: 1 !important;
@@ -230,11 +383,26 @@ def inject_css (is_blank_slate =False ):
     }}
     {scrollbar_lock}
     
-    [data-testid="stMain"] {{position: relative !important;}}
-    [data-testid="stMain"]::before {{content: ""; position: absolute; top: 310px; left: 50%; width: 1100px; height: 1100px; transform: translate(-50%, -50%); background: radial-gradient(circle, rgba(255, 0, 128, 0.14) 0%, rgba(123, 0, 255, 0.08) 25%, rgba(0, 191, 255, 0.04) 55%, transparent 70%); filter: blur(65px); animation: pulseRainbowGlow 12s ease-in-out infinite; pointer-events: none; z-index: 0; will-change: transform, filter;}}
-    @keyframes pulseRainbowGlow {{ 0%, 100% {{transform: translate(-50%, -50%) scale(1); filter: blur(65px) hue-rotate(0deg);}} 50% {{transform: translate(-50%, -50%) scale(1.05); filter: blur(75px) hue-rotate(180deg);}} }}
+    [data-testid="stAppViewBlockContainer"],
+    [data-testid="stAppViewMainBlock"],
+    [data-testid="stVerticalBlock"],
+    [data-testid="stComponentBlock"],
+    [data-testid="stChatMessageContainer"],
+    [data-testid="stElementContainer"],
+    .stChatInputContainer {{
+        background: transparent !important;
+        background-color: transparent !important;
+        border: none !important;
+    }}
+    
+    [data-testid="stMain"] {{
+        position: relative !important;
+        z-index: 0 !important;
+    }}
+
     div[data-testid="stHorizontalBlock"]:has(.landing-marker) > div[data-testid="stColumn"]:nth-child(2) {{animation: continuousWorkspaceHover 6s ease-in-out infinite !important; will-change: transform;}}
     @keyframes continuousWorkspaceHover {{ 0%, 100% {{transform: translateY(0px);}} 50% {{transform: translateY(-10px);}} }}
+    
     .logo-container {{display: flex; justify-content: center; align-items: center; margin-top: -35px; margin-bottom: -15px; height: 180px !important; overflow: visible !important;}}
     .logo-wrapper {{position: relative; display: inline-block; width: 300px; height: 180px; transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); will-change: transform;}}
     .logo-wrapper:hover {{transform: scale(1.04);}}
@@ -277,7 +445,7 @@ def inject_css (is_blank_slate =False ):
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        background-color: #ff9800;
+        background-color: #FE5E00 !important;
         flex-shrink: 0 !important;
     }}
     .profile-avatar-wrapper img {{
@@ -345,27 +513,41 @@ def inject_css (is_blank_slate =False ):
     [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {{
         flex-direction: row-reverse !important;
     }}
+    
     [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] {{
         {avatar_bg_style}
         border-radius: 50% !important;
     }}
+    
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] svg,
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] div {{
+        display: { "none" if not custom_avatar_url else "flex" } !important;
+    }}
+
+    /* User Messages: Glassmorphism from Version 2 */
     [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {{
-        background-color: #212124 !important;
+        background-color: rgba(33, 33, 36, 0.72) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.06) !important;
         padding: 14px 20px !important;
         border-radius: 18px 18px 4px 18px !important;
         max-width: 75% !important;
         margin-right: 12px !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2) !important;
     }}
     
+    /* Assistant Messages: Safe contrast readability from Version 2 */
     [data-testid="stChatMessage"]:not(:has([data-testid="stChatMessageAvatarUser"])) [data-testid="stChatMessageContent"] {{
-        background-color: rgba(255, 255, 255, 0.04) !important;
-        border: 1px solid rgba(255, 255, 255, 0.03) !important;
+        background-color: rgba(22, 22, 26, 0.45) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.04) !important;
         padding: 0px !important; 
         border-radius: 18px 18px 18px 4px !important; 
         max-width: 75% !important; 
         margin-left: 12px !important; 
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15) !important;
         display: flex !important;
         flex-direction: column !important;
         overflow: hidden !important;
@@ -381,8 +563,8 @@ def inject_css (is_blank_slate =False ):
     }}
 
     .chat-bubble-top-container {{
-        background-color: rgba(255, 255, 255, 0.02) !important;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+        background-color: rgba(255, 255, 255, 0.01) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
         padding: 12px 20px !important;
         display: flex !important;
         align-items: center !important;
@@ -473,174 +655,288 @@ def inject_css (is_blank_slate =False ):
     .chat-bubble-body-text p:first-child {{ margin-top: 0px !important; }}
     .chat-bubble-body-text p:last-child {{ margin-bottom: 0px !important; }}
     </style>
-    """,unsafe_allow_html =True )
+    """, unsafe_allow_html=True)
 
-def obtener_codigo_aleatorio ():
-    return str (random .randint (1000 ,9999 ))
+def obtener_codigo_aleatorio():
+    return str(random.randint(1000, 9999))
 
-def render_profile_sidebar ():
-    if st .session_state .user_avatar_base64 :
-        avatar_html =f'<img src="{st.session_state.user_avatar_base64}" class="user-avatar-marker" alt="Avatar">'
-    else :
-        inicial =st .session_state .user_name [0 ].upper ()if st .session_state .user_name else "U"
-        avatar_html =f'<span style="color: white; font-weight: bold; font-size: 1.05rem;">{inicial}</span>'
+def render_profile_sidebar():
+    if st.session_state.user_avatar_base64:
+        avatar_html = f'<img src="{st.session_state.user_avatar_base64}" class="user-avatar-marker" alt="Avatar">'
+    else:
+        inicial = st.session_state.display_name[0].upper() if st.session_state.display_name else "U"
+        avatar_html = f'<span style="color: white; font-weight: bold; font-size: 1.05rem;">{inicial}</span>'
 
-    @st .dialog ("Edit Profile Identity Settings")
-    def open_profile_modal ():
-        nuevo_nombre =st .text_input ("Profile Display Name",value =st .session_state .user_name )
-        st .write (f"**Assigned System Role:** `{st.session_state.user_tag}`")
-        archivo_imagen =st .file_uploader ("Upload Profile Avatar Graphic",type =["png","jpg","jpeg"])
+    @st.dialog("Edit Profile Identity Settings")
+    def open_profile_modal():
+        nuevo_nombre = st.text_input("Profile Display Name", value=st.session_state.display_name)
+        custom_prompt = st.text_area("Custom Assistant Instructions",value=st.session_state.get("custom_prompt",""),
+            max_chars=300,
+            height=120,
+            help=(
+                "Examples:\n"
+                "- Always answer in English\n"
+                "- Call me Sensei\n"
+                "- Keep responses concise"
+            )
+    )
+        st.write(f"**Assigned System Role:** `{st.session_state.role}`")
+        archivo_imagen = st.file_uploader("Upload Profile Avatar Graphic", type=["png", "jpg", "jpeg"])
 
-        if st .button ("Save Changes",use_container_width =True ):
-            st .session_state .user_name =nuevo_nombre if nuevo_nombre .strip ()else f"Guest-{obtener_codigo_aleatorio()}"
-            if archivo_imagen :
-                encoded =base64 .b64encode (archivo_imagen .read ()).decode ()
-                st .session_state .user_avatar_base64 =f"data:{archivo_imagen.type};base64,{encoded}"
-            st .rerun ()
+        if st.button("Save Changes", use_container_width=True):
 
-    query_params =st .query_params 
-    if "edit_profile"in query_params :
-        st .query_params .clear ()
-        open_profile_modal ()
+            updates = {}
 
-    with st .sidebar :
-        st .markdown (f"""
+            nuevo_nombre_final = (
+                nuevo_nombre.strip()
+                if nuevo_nombre.strip()
+                else f"Guest-{obtener_codigo_aleatorio()}"
+            )
+            updates["display_name"] = nuevo_nombre_final
+            updates["custom_prompt"] = custom_prompt.strip()
+
+            if archivo_imagen:
+                encoded = base64.b64encode(
+                    archivo_imagen.read()
+                ).decode()
+
+                avatar_base64 = (
+                    f"data:{archivo_imagen.type};base64,{encoded}"
+                )
+                updates["avatar_base64"] = avatar_base64
+
+            success, message = actualizar_usuario(
+                st.session_state.user_id,
+                updates
+            )
+
+            if success:
+                st.session_state.display_name = (
+                    updates["display_name"]
+                )
+                st.session_state.custom_prompt = (
+                    updates["custom_prompt"]
+                )
+                if "avatar_base64" in updates:
+                    st.session_state.user_avatar_base64 = (
+                        updates["avatar_base64"]
+                    )
+                
+                st.rerun()
+            else:
+                st.error(message)
+
+        if st.button("Logout",use_container_width=True,type="secondary"):
+
+            token = st.session_state.get(
+                "session_token",
+                None
+            )
+            
+            cerrar_sesion(token)
+            st.session_state.clear()
+            st.components.v1.html(
+                "<script>parent.window.location.reload();</script>",
+                height=0,
+                width=0
+            )
+        st.markdown("""
+        <hr style="
+            margin: 8px 0px 6px 0px;
+            border: none;
+            border-top: 1px solid rgba(255,255,255,0.08);
+        ">
+        <div style="
+            text-align:center;
+            font-size:0.72rem;
+            color:rgba(255,255,255,0.45);
+            line-height:1.5;
+            padding-top:4px;
+        ">
+            <div>Developed by Migues456</div>
+            <div>Systems Engineering Student</div>
+            <div>Corporación Universitaria del Caribe - CECAR</div>
+            <div>2026</div>
+            <div>123miguelmar321@gmail.com</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    query_params = st.query_params 
+    if "edit_profile" in query_params:
+        del st.query_params["edit_profile"]
+        open_profile_modal()
+
+    with st.sidebar:
+        st.markdown(f"""
             <div class="custom-sidebar-fixed-bottom">
                 <div class="profile-info-group">
                     <div class="profile-avatar-wrapper">
                         {avatar_html}
                     </div>
                     <div class="profile-details">
-                        <span class="profile-name">{st.session_state.user_name}</span>
-                        <span class="profile-tag">{st.session_state.user_tag}</span>
+                        <span class="profile-name">{st.session_state.display_name}</span>
+                        <span class="profile-tag">{st.session_state.role}</span>
                     </div>
                 </div>
                 <a href="?edit_profile=1" target="_self" class="material-symbols-rounded custom-cog-icon-trigger">
                     settings
                 </a>
             </div>
-        """,unsafe_allow_html =True )
+        """, unsafe_allow_html=True)
 
+def cerrar_sesion(session_token):
+    if not session_token:
+        return
 
+    session_data = _cargar_sesiones()
+    if session_token in session_data.get("sessions", {}):
+        del session_data["sessions"][session_token]
 
+    _guardar_sesiones(session_data)
 
-def run ():
+def run():
 
-    if "user_name"not in st .session_state :
-        st .session_state .user_name =f"Guest-{obtener_codigo_aleatorio()}"
-    if "user_tag"not in st .session_state :
-        st .session_state .user_tag ="Free User"
-    if "user_avatar_base64"not in st .session_state :
-        st .session_state .user_avatar_base64 =""
-    if "chat_seleccionado_id"not in st .session_state :
-        st .session_state .chat_seleccionado_id =None 
-    if "ultima_similitud"not in st .session_state :
-        st .session_state ["ultima_similitud"]=None 
+    required_keys = [
+        "user_id",
+        "username",
+        "display_name",
+        "role"
+    ]
 
+    for key in required_keys:
+        if key not in st.session_state:
+            st.switch_page("slpages/login.py")
+            return
 
-    if "audio_reproducido"not in st .session_state :
-        st .session_state .audio_reproducido =False 
+    if not st.session_state.get("autenticado", False):
+        st.switch_page("slpages/login.py")
+        return
 
+    if "chat_seleccionado_id" not in st.session_state:
+        st.session_state.chat_seleccionado_id = None 
+    
+    if (st.session_state.chat_seleccionado_id is None and "chat" in st.query_params):
+        st.session_state.chat_seleccionado_id = st.query_params["chat"]
 
-    if not st .session_state .audio_reproducido and os .path .exists ("assets/startup.mp3"):
-        with open ("assets/startup.mp3","rb")as f :
-            audio_bytes =f .read ()
+    if "ultima_similitud" not in st.session_state:
+        st.session_state["ultima_similitud"] = None 
 
-        audio_base64 =base64 .b64encode (audio_bytes ).decode ()
-        st .markdown (
-        f'<audio autoplay style="display:none;"><source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3"></audio>',
-        unsafe_allow_html =True 
-        )
-        st .session_state .audio_reproducido =True 
+    chat_id = st.session_state.chat_seleccionado_id 
 
-    chat_id =st .session_state .chat_seleccionado_id 
+    if "instancia_chat_id" not in st.session_state:
+        st.session_state.instancia_chat_id = None 
 
-    if "instancia_chat_id"not in st .session_state :
-        st .session_state .instancia_chat_id =None 
+    if st.session_state.instancia_chat_id != chat_id:
+        st.session_state.instancia_chat_id = chat_id 
+        st.session_state.mensajes_chat_actual = cargar_chat(chat_id) if chat_id else []
 
-    if st .session_state .instancia_chat_id !=chat_id :
-        st .session_state .instancia_chat_id =chat_id 
-        st .session_state .mensajes_chat_actual =cargar_chat (chat_id )if chat_id else []
+    if "mensajes_chat_actual" not in st.session_state:
+        st.session_state.mensajes_chat_actual = cargar_chat(chat_id) if chat_id else []
 
-    if "mensajes_chat_actual"not in st .session_state :
-        st .session_state .mensajes_chat_actual =cargar_chat (chat_id )if chat_id else []
+    mensajes = st.session_state.mensajes_chat_actual 
+    logo_avatar_path = "assets/chatprofile.png"
 
-    mensajes =st .session_state .mensajes_chat_actual 
-    logo_avatar_path ="assets/chatprofile.png"
+    inject_css(is_blank_slate=(len(mensajes) == 0))
+    render_profile_sidebar()
 
-    inject_css (is_blank_slate =(len (mensajes )==0 ))
-    render_profile_sidebar ()
-
-
-    if len (mensajes )==0 :
-        st .markdown ("<br><br><br>",unsafe_allow_html =True )
-        c1 ,c2 ,c3 =st .columns ([1 ,4 ,1 ])
-        with c2 :
-            st .markdown ('<div class="landing-marker"></div>',unsafe_allow_html =True )
-            logo_data =get_image_base64 ("assets/logogenesis.png")
-            if logo_data :
-                st .markdown (f"""
+    if len(mensajes) == 0:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([1, 4, 1])
+        with c2:
+            st.markdown('<div class="landing-marker"></div>', unsafe_allow_html=True)
+            logo_data = get_image_base64("assets/logogenesis.png")
+            if logo_data:
+                st.markdown(f"""
                     <div class="logo-container">
-                        <div class="logo-wrapper">
-                            <img src="data:image/png;base64,{logo_data}" class="genesis-logo" alt="Genesis Logo">
-                        </div>
+                        <a href="https://github.com/Migues456" target="_blank" style="text-decoration: none; cursor: pointer;">
+                            <div class="logo-wrapper">
+                                <img src="data:image/png;base64,{logo_data}" class="genesis-logo" alt="Genesis Logo">
+                            </div>
+                        </a>
                     </div>
-                """,unsafe_allow_html =True )
-            else :
-                st .markdown ("<div style='text-align:center; color:#ff007f;'>[Asset missing at assets/logogenesis.png]</div>",unsafe_allow_html =True )
-                st .markdown ("<br><br>",unsafe_allow_html =True )
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='text-align:center; color:#ff007f;'>[Asset missing at assets/logogenesis.png]</div>", unsafe_allow_html=True)
+                st.markdown("<br><br>", unsafe_allow_html=True)
 
-            st .markdown ('<h1 style="text-align:center; font-size:3.5rem; font-weight:300; color:white; margin:0px; padding-bottom:5px;">What can I help you with?</h1>',unsafe_allow_html =True )
-            st .markdown ('<p style="text-align:center; color:#9aa0a6; font-size:1.1rem; margin-bottom:25px;">Ask Genesis about anything!</p>',unsafe_allow_html =True )
+            st.markdown('<div style="text-align:center; font-size:3.5rem; font-weight:300; color:white; margin:0px; padding-bottom:5px; font-family: inherit; display: block;">What can I help you with?</div>', unsafe_allow_html=True)
+            st.markdown('<p style="text-align:center; color:#9aa0a6; font-size:1.1rem; margin-bottom:25px;">Ask Genesis about anything!</p>', unsafe_allow_html=True)
 
-            prompt =st .chat_input ("Ask Genesis anything...",key ="blank_slate_chat_input")
+            prompt = st.chat_input("Ask Genesis anything...", key="blank_slate_chat_input")
+            st.markdown("""
+                <style>
+                .stMainBlockContainer{
+                    padding: 3rem 1rem 10rem !important;
+                }
+                .landing-footer{
+                    position: fixed;
+                    bottom: 0px;
+                    left: 50%;
+                    transform: translateX(-50%);
 
-        if prompt :
-            mensajes .append ({"role":"user","content":prompt })
-            respuesta =consultar_llm (prompt )
-            mensajes .append ({"role":"assistant","content":respuesta })
-            guardar_chat (st .session_state .chat_seleccionado_id ,mensajes )
-            st .rerun ()
+                    text-align: center;
 
+                    font-size: 0.68rem;
+                    line-height: 1.35;
 
-    else :
-        for index ,msg in enumerate (mensajes ):
-            avatar_to_use =logo_avatar_path if msg ["role"]=="assistant"else None 
-            with st .chat_message (msg ["role"],avatar =avatar_to_use ):
-                if msg ["role"]=="assistant":
-                    pct =st .session_state ["ultima_similitud"]if index ==len (mensajes )-1 else None 
-                    texto_limpio ,html_banner =extraer_y_renderizar_banner (msg ["content"],similitud_pct =pct )
+                    color: rgba(255,255,255,0.20);
 
-                    if html_banner :
-                        st .markdown (html_banner ,unsafe_allow_html =True )
-                    st .markdown (f'<div class="chat-bubble-body-text">{texto_limpio}</div>',unsafe_allow_html =True )
-                else :
-                    st .markdown (msg ["content"])
+                    pointer-events: none;
+                    z-index: 10;
+                }
+                </style>
 
-        prompt =st .chat_input ("Ask Genesis anything...",key ="active_chat_input")
-        if prompt :
-            mensajes .append ({"role":"user","content":prompt })
-            with st .chat_message ("user",avatar =None ):
-                st .markdown (prompt )
+                <div class="landing-footer">
+                    <div>by Migues456 · 123miguelmar321@gmail.com · 2026</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            with st .chat_message ("assistant",avatar =logo_avatar_path ):
-                respuesta =consultar_llm (prompt )
-                pct =st .session_state ["ultima_similitud"]
+        if prompt:
+            mensajes.append({"role": "user", "content": prompt})
+            respuesta = consultar_llm(prompt)
+            mensajes.append({"role": "assistant", "content": respuesta})
+            guardar_chat(st.session_state.chat_seleccionado_id, mensajes)
+            st.rerun()
 
-                texto_limpio ,html_banner =extraer_y_renderizar_banner (respuesta ,similitud_pct =pct )
-                if html_banner :
-                    st .markdown (html_banner ,unsafe_allow_html =True )
+    else:
+        for index, msg in enumerate(mensajes):
+            avatar_to_use = logo_avatar_path if msg["role"] == "assistant" else None 
+            with st.chat_message(msg["role"], avatar=avatar_to_use):
+                if msg["role"] == "assistant":
+                    pct = st.session_state["ultima_similitud"] if index == len(mensajes) - 1 else None 
+                    texto_limpio, html_banner = extraer_y_renderizar_banner(msg["content"], similitud_pct=pct)
 
-                placeholder =st .empty ()
-                texto =""
+                    if html_banner:
+                        st.markdown(html_banner, unsafe_allow_html=True)
+                    st.markdown(f'<div class="chat-bubble-body-text">{texto_limpio}</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(msg["content"])
 
-                for char in texto_limpio :
-                    texto +=char 
-                    placeholder .markdown (f'<div class="chat-bubble-body-text">{texto}</div>',unsafe_allow_html =True )
+        prompt = st.chat_input("Ask Genesis anything...", key="active_chat_input")
+        if prompt:
+            mensajes.append({"role": "user", "content": prompt})
+            with st.chat_message("user", avatar=None):
+                st.markdown(prompt)
 
-            mensajes .append ({"role":"assistant","content":respuesta })
-            guardar_chat (chat_id ,mensajes )
-            st .rerun ()
+            with st.chat_message("assistant", avatar=logo_avatar_path):
+                respuesta = consultar_llm(prompt)
+                pct = st.session_state["ultima_similitud"]
 
-if __name__ =="__main__":
-    run ()
+                texto_limpio, html_banner = extraer_y_renderizar_banner(respuesta, similitud_pct=pct)
+
+                placeholder = st.empty()
+                texto = ""
+
+                for char in texto_limpio:
+                    texto += char 
+                    placeholder.markdown(f"""
+                        {html_banner}
+                        <div class="chat-bubble-body-text">{texto}</div>
+                    """, unsafe_allow_html=True)
+
+            mensajes.append({"role": "assistant", "content": respuesta})
+            guardar_chat(chat_id, mensajes)
+            st.rerun()
+
+if __name__ == "__main__":
+    run()
