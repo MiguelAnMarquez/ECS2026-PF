@@ -683,8 +683,37 @@ def render_profile_sidebar():
     )
         st.write(f"**Assigned System Role:** `{st.session_state.role}`")
         archivo_imagen = st.file_uploader("Upload Profile Avatar Graphic", type=["png", "jpg", "jpeg"])
+        
 
-        if st.button("Save Changes", use_container_width=True):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            remove_avatar = st.button(
+                "Remove Avatar",
+                key="remove_avatar_btn",
+                use_container_width=True
+            )
+
+        with col2:
+            save_changes = st.button(
+                "Save Changes",
+                key="save_profile_btn",
+                use_container_width=True
+            )
+
+        if remove_avatar:
+            success, message = actualizar_usuario(
+                st.session_state.user_id,
+                {"avatar_base64": ""}
+            )
+
+            if success:
+                st.session_state.user_avatar_base64 = ""
+                st.rerun()
+            else:
+                st.error(message)
+
+        if save_changes:
 
             updates = {}
 
@@ -727,7 +756,7 @@ def render_profile_sidebar():
             else:
                 st.error(message)
 
-        if st.button("Logout",use_container_width=True,type="secondary"):
+        if st.button("Logout",key="logout_btn",use_container_width=True,type="secondary"):
 
             token = st.session_state.get(
                 "session_token",
