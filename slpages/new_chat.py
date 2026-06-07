@@ -5,6 +5,7 @@ import base64
 import random 
 import numpy as np 
 from datetime import datetime 
+from zoneinfo import ZoneInfo
 from groq import Groq 
 import warnings
 from simpleeval import simple_eval
@@ -128,7 +129,7 @@ def consultar_llm(prompt):
 
 def construir_system_prompt():
 
-    ahora = datetime.now()
+    ahora = datetime.now(ZoneInfo("America/Bogota"))
     fecha_actual = ahora.strftime("%A, %d de %B de %Y")
     hora_actual = ahora.strftime("%I:%M:%S %p")
 
