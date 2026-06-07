@@ -7,3 +7,4 @@ torchvision
 extra-streamlit-components
 bcrypt
 simpleeval
+streamlit==1.55.0
