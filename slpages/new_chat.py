@@ -300,7 +300,7 @@ def consultar_groq(mensajes):
 
         completion = (
             client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="openai/gpt-oss-20b",
                 messages=mensajes,
                 temperature=0.3
             )
